@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoramento Rodoviário em Tempo Real</title>
+    
+    <!-- Bibliotecas Externas -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css">
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.5/xlsx.full.min.js"></script>
+
+    <style>
+        #map { height: 600px; }
+        
+        .incident-marker {
+            animation: pulse 1.5s infinite;
+            filter: drop-shadow(0 0 5px rgba(255,0,0,0.5));
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(0.95); }
+        }
+
+        .map-popup .leaflet-popup-content-wrapper {
+            background: #1a1a1a !important;
+            color: white !important;
+            border-radius: 8px !important;
+            border: 1px solid #ff0000 !important;
+        }
+
+        .map-popup .leaflet-popup-tip {
+            background: #1a1a1a !important;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-900 text-gray-100">
+    <!-- Cabeçalho -->
+    <header class="bg-gray-800 border-b border-red-600">
+        <div class="container mx-auto px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <svg class="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+                    <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <div>
+                    <h1 class="text-2xl font-bold">Monitoramento Rodoviário Nacional</h1>
+                    <div class="text-sm text-red-400" id="contador">Ocorrências ativas: 0</div>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-6">
+                <button onclick="exportToExcel()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-all">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                    Exportar Dados
+                </button>
+                
+                <div class="text-center">
+                    <p class="text-red-500 font-mono text-xl" id="liveClock"></p>
+                    <p class="text-xs text-gray-400">Horário Oficial BR</p>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Conteúdo Principal -->
+    <main class="container mx-auto px-6 py-8">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Mapa -->
+            <div class="bg-gray-800 rounded-xl p-6 border border-red-600/30">
+                <div id="map" class="rounded-lg overflow-hidden"></div>
+            </div>
+
+            <!-- Lista de Incidentes -->
+            <div class="bg-gray-800 rounded-xl p-6 border border-red-600/30 h-[600px] overflow-y-auto">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-xl font-bold text-red-500">Incidentes Ativos</h2>
+                    <span class="text-sm text-red-400">Atualizando: <span id="updateTime"></span></span>
+                </div>
+                <div class="space-y-4" id="incidentsContainer"></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Rodapé -->
+    <footer class="border-t border-red-600/30 mt-8 py-6 bg-gray-800">
+        <div class="container mx-auto px-6 text-center text-sm text-gray-400">
+            Dandara Silva - 2025 © Todos os direitos reservados
+        </div>
+    </footer>
+
+    <script>
+        // Configurações Iniciais
+        let allIncidents = [];
+        const markers = [];
+        
+        // Ícones Personalizados Corrigidos
+        const icons = {
+            acidente: L.icon({
+                iconUrl: 'https://cdn-icons-png.flaticon.com/512/4524/4524673.png',
+                iconSize: [40, 40],
+                className: 'incident-marker'
+            }),
+            bloqueio: L.icon({
+                iconUrl: 'https://cdn-icons-png.flaticon.com/512/984/984509.png',
+                iconSize: [40, 40],
+                className: 'incident-marker'
+            }),
+            obras: L.icon({
+                iconUrl: 'https://cdn-icons-png.flaticon.com/512/619/619053.png',
+                iconSize: [40, 40],
+                className: 'incident-marker'
+            })
+        };
+
+        // Inicialização do Mapa
+        const map = L.map('map').setView([-15.7801, -47.9292], 4);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png?key=4545f3dfdd074a05a45234537252402', {
+            attribution: 'Sistema de Monitoramento Rodoviário'
+        }).addTo(map);
+
+        // Funções Principais
+        function generateRandomIncident() {
+            const types = ['acidente', 'bloqueio', 'obras'];
+            const states = [
+                {name: 'SP', coords: [-23.5505, -46.6333]},
+                {name: 'RJ', coords: [-22.9068, -43.1729]},
+                {name: 'MG', coords: [-19.9167, -43.9345]},
+                {name: 'RS', coords: [-30.0346, -51.2177]}
+            ];
+
+            const randomState = states[Math.floor(Math.random() * states.length)];
+            const randomType = types[Math.floor(Math.random() * types.length)];
+
+            return {
+                id: Date.now(),
+                type: randomType,
+                coordinates: [
+                    randomState.coords[0] + (Math.random() - 0.5) * 0.5,
+                    randomState.coords[1] + (Math.random() - 0.5) * 0.5
+                ],
+                title: `${randomType.toUpperCase()} - ${randomState.name}`,
+                details: `Incidente na rodovia BR-${Math.floor(Math.random() * 400)}`,
+                severity: ['crítico', 'alto', 'médio'][Math.floor(Math.random() * 3)],
+                time: new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'}),
+                state: randomState.name
+            };
+        }
+
+        function addIncidentToMap(incident) {
+            const marker = L.marker(incident.coordinates, {icon: icons[incident.type]})
+                .addTo(map)
+                .bindPopup(`
+                    <div class="text-gray-100">
+                        <strong class="text-red-500 text-lg">${incident.title}</strong>
+                        <p class="text-sm mt-2">${incident.details}</p>
+                        <div class="mt-3 grid grid-cols-2 gap-2 text-xs">
+                            <div class="bg-red-900/20 p-1 rounded">Severidade: ${incident.severity.toUpperCase()}</div>
+                            <div class="bg-gray-800/20 p-1 rounded">Estado: ${incident.state}</div>
+                            <div class="col-span-2 text-gray-400">${incident.time}</div>
+                        </div>
+                    </div>
+                `, {className: 'map-popup'});
+            markers.push(marker);
+        }
+
+        function updateIncidentsList() {
+            const container = document.getElementById('incidentsContainer');
+            container.innerHTML = '';
+
+            allIncidents.slice(-15).forEach(incident => {
+                const item = document.createElement('div');
+                item.className = `bg-gray-700 p-4 rounded-lg border-l-4 ${
+                    incident.severity === 'crítico' ? 'border-red-500' : 
+                    incident.severity === 'alto' ? 'border-orange-500' : 'border-yellow-500'
+                }`;
+                
+                item.innerHTML = `
+                    <div class="flex items-start gap-3">
+                        <img src="${icons[incident.type].options.iconUrl}" class="w-8 h-8">
+                        <div class="flex-1">
+                            <div class="flex justify-between items-start">
+                                <h3 class="font-medium">${incident.title}</h3>
+                                <span class="text-sm ${incident.severity === 'crítico' ? 'text-red-500' : 
+                                    incident.severity === 'alto' ? 'text-orange-500' : 'text-yellow-500'}">
+                                    ${incident.time}
+                                </span>
+                            </div>
+                            <p class="text-sm text-gray-300 mt-1">${incident.details}</p>
+                            <div class="mt-2 flex gap-2">
+                                <span class="text-xs px-2 py-1 rounded ${
+                                    incident.severity === 'crítico' ? 'bg-red-900/50 text-red-300' : 
+                                    incident.severity === 'alto' ? 'bg-orange-900/50 text-orange-300' : 'bg-yellow-900/50 text-yellow-300'
+                                }">
+                                    ${incident.type.toUpperCase()}
+                                </span>
+                                <span class="text-xs px-2 py-1 rounded bg-gray-600/50">
+                                    ${incident.state}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.prepend(item);
+            });
+
+            // Atualizar contador
+            document.getElementById('contador').textContent = `Ocorrências ativas: ${allIncidents.length}`;
+        }
+
+        function exportToExcel() {
+            const data = allIncidents.map(incident => ({
+                Tipo: incident.type.toUpperCase(),
+                Rodovia: incident.details,
+                Estado: incident.state,
+                Severidade: incident.severity.toUpperCase(),
+                Horário: incident.time,
+                Latitude: incident.coordinates[0].toFixed(4),
+                Longitude: incident.coordinates[1].toFixed(4)
+            }));
+
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Incidentes");
+            XLSX.writeFile(wb, 'incidentes_rodoviarios.xlsx');
+        }
+
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('liveClock').textContent = 
+                now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            document.getElementById('updateTime').textContent = 
+                now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        // Atualização Automática
+        setInterval(() => {
+            const newIncident = generateRandomIncident();
+            allIncidents.push(newIncident);
+            addIncidentToMap(newIncident);
+            updateIncidentsList();
+            
+            if(allIncidents.length > 50) {
+                allIncidents = allIncidents.slice(-50);
+                markers.splice(0, markers.length - 50).forEach(marker => map.removeLayer(marker));
+            }
+        }, 5000);
+
+        // Inicialização
+        updateTime();
+        setInterval(updateTime, 1000);
+        
+        // Gerar incidentes iniciais
+        for(let i = 0; i < 10; i++) {
+            const incident = generateRandomIncident();
+            allIncidents.push(incident);
+            addIncidentToMap(incident);
+        }
+        updateIncidentsList();
+    </script>
+</body>
+</html>
